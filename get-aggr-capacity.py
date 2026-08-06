@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 import sys
+import os
 from tabulate import tabulate
 import re
 import logging
@@ -9,6 +11,18 @@ import paramiko
 from datetime import datetime
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+def normalize_credential(value):
+    """Fix common copy/paste artifacts in credential env vars: a literal
+    backslash-n typed instead of an actual newline (common in domain-prefixed
+    logins like 'account-01\\n028724'), and curly/smart quotes wrapping the
+    value."""
+    if value is None:
+        return value
+    # Strip smart/curly quotes that may have been included from copy-paste
+    value = value.strip('\u201c\u201d\u2018\u2019"\'')
+    # Convert a literal backslash-n into a real newline
+    value = value.replace('\\n', '\n')
+    return value
 def execute_ssh_command(remote_host, username, password, command):
     """Establishes an SSH connection and executes a CLI command."""
     try:
@@ -201,7 +215,7 @@ def parse_aggregate_summary(volume_output, aggregate_output, efficiency_output, 
     }
     
     date_str = datetime.now().strftime("%Y%m%d")
-    json_filename = f"azure_disks_{selected_env}_{date_str}.json"
+    json_filename = f"aggr-capacity-{selected_env}-{date_str}.json"
     try:
         with open(json_filename, "w") as json_file:
             json.dump(json_output_payload, json_file, indent=2)
@@ -224,8 +238,22 @@ def parse_aggregate_summary(volume_output, aggregate_output, efficiency_output, 
         logging.error(f"Failed to generate CSV export file: {e}")
 if __name__ == "__main__":
     remote_host = input("Enter the remote host IP or hostname: ")
-    username = input("Enter your username: ")
-    password = getpass.getpass("Enter your password: ")
+
+    env_username = normalize_credential(os.environ.get("ONTAP_USER"))
+    env_password = normalize_credential(os.environ.get("ONTAP_PASSWORD"))
+
+    if env_username:
+        username = env_username
+        logging.info("Using username from ONTAP_USER environment variable.")
+    else:
+        username = input("Enter your username: ")
+
+    if env_password:
+        password = env_password
+        logging.info("Using password from ONTAP_PASSWORD environment variable.")
+    else:
+        password = getpass.getpass("Enter your password: ")
+
     env_context = input("Enter environment identifier tag (e.g. prod, dev, stg): ") or "production"
     print(f"\nConnecting to {remote_host}...")
     
@@ -234,15 +262,24 @@ if __name__ == "__main__":
         remote_host, username, password, 
         "volume show -fields vserver,volume,aggregate,size,available"
     )
+    if volume_error:
+        logging.warning(f"Standard Error trace caught from Volume command:\n{volume_error}")
+
     print("Executing: aggr show...")
     aggregate_output, aggregate_error = execute_ssh_command(
         remote_host, username, password, 
         "aggr show -fields availsize,percent-used,size,usedsize"
     )
+    if aggregate_error:
+        logging.warning(f"Standard Error trace caught from Aggregate command:\n{aggregate_error}")
+
     print("Executing: storage aggregate show-efficiency...")
     efficiency_output, efficiency_error = execute_ssh_command(
         remote_host, username, password, 
         "storage aggregate show-efficiency"
     )
+    if efficiency_error:
+        logging.warning(f"Standard Error trace caught from Efficiency command:\n{efficiency_error}")
+
     print("Compiling cross-allocations and mapping data reduction statistics...\n")
     parse_aggregate_summary(volume_output, aggregate_output, efficiency_output, remote_host, env_context)
