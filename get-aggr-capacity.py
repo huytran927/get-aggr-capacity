@@ -12,23 +12,50 @@ from datetime import datetime
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 def normalize_credential(value):
-    """Fix common copy/paste artifacts in credential env vars: a literal
-    backslash-n typed instead of an actual newline (common in domain-prefixed
-    logins like 'account-01\\n028724'), and curly/smart quotes wrapping the
-    value."""
+    """Fix common copy/paste artifacts in credential env vars: curly/smart
+    quotes wrapping the value (e.g. from pasting out of a notes app), and
+    stray leading/trailing whitespace. Does NOT touch a literal backslash-n
+    inside the value -- for domain-prefixed logins like 'account-01\\n028724'
+    that backslash is a literal domain separator character, not an escaped
+    newline, and converting it would break authentication."""
     if value is None:
         return value
-    # Strip smart/curly quotes that may have been included from copy-paste
-    value = value.strip('\u201c\u201d\u2018\u2019"\'')
-    # Convert a literal backslash-n into a real newline
-    value = value.replace('\\n', '\n')
+    value = value.strip('\u201c\u201d\u2018\u2019"\'').strip()
     return value
 def execute_ssh_command(remote_host, username, password, command):
     """Establishes an SSH connection and executes a CLI command."""
     try:
         with paramiko.SSHClient() as ssh:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(remote_host, username=username, password=password, timeout=15)
+            try:
+                # Establish the transport without letting paramiko silently
+                # attempt password/agent/key auth first -- we want to drive
+                # keyboard-interactive ourselves so prompts can be logged.
+                ssh.connect(
+                    remote_host, username=username, password=None,
+                    allow_agent=False, look_for_keys=False, timeout=15
+                )
+            except paramiko.ssh_exception.SSHException:
+                pass  # expected: "none" auth is rejected, transport stays open
+
+            transport = ssh.get_transport()
+            if transport is None:
+                raise RuntimeError("Failed to establish SSH transport.")
+
+            if not transport.is_authenticated():
+                def interactive_handler(title, instructions, prompt_list):
+                    if title:
+                        logging.info(f"Keyboard-interactive title: {title}")
+                    if instructions:
+                        logging.info(f"Keyboard-interactive instructions: {instructions}")
+                    answers = []
+                    for prompt_text, echo in prompt_list:
+                        logging.info(f"Keyboard-interactive prompt received: {prompt_text!r} (echo={echo})")
+                        answers.append(password)
+                    return answers
+
+                transport.auth_interactive(username, interactive_handler)
+
             stdin, stdout, stderr = ssh.exec_command(command)
             return stdout.read().decode(), stderr.read().decode()
     except Exception as e:

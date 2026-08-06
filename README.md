@@ -39,6 +39,13 @@ Python 3.7+ (uses f-strings and standard library `csv`/`json`/`getpass`).
 python3 get-aggr-capacity.py
 ```
 
+It can also be made directly executable:
+
+```bash
+chmod 755 get-aggr-capacity.py
+./get-aggr-capacity.py
+```
+
 By default you'll be prompted interactively for credentials. If the
 `ONTAP_USER` and `ONTAP_PASSWORD` environment variables are set, the script uses
 those instead and skips the corresponding prompt(s):
@@ -48,6 +55,22 @@ export ONTAP_USER="admin"
 export ONTAP_PASSWORD="your-password"
 python3 get-aggr-capacity.py
 ```
+
+The script strips any wrapping curly/smart quotes (e.g. from a copy-paste
+out of a notes app) and stray whitespace from both values before use. It
+does **not** convert a literal `\n` inside the value into a real newline —
+for domain-prefixed logins such as `account-01\n028724`, that backslash is
+typically a literal domain separator character (`DOMAIN\username`), not an
+escaped newline, and converting it would break authentication. If your
+ONTAP account genuinely needs a real newline embedded in the value, use
+ANSI-C shell quoting: `export ONTAP_USER=$'account-01\n028724'`.
+
+Because some ONTAP clusters only allow `publickey`/`keyboard-interactive`
+auth (not plain `password`), the script drives the keyboard-interactive
+exchange directly and logs each prompt it receives from the server (the
+prompt text only — never the password) at `INFO` level. If login fails,
+check that log output first to see what the server is actually asking
+for.
 
 You'll still be prompted for:
 
